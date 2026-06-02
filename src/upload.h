@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <windows.h>
 
+#include "xbl_account.h"
+
 /* Largest .dukex archive the console will attempt to upload. The whole file is
  * held in RAM once (no base64 inflation any more), so this is bounded by the
  * console's ~64 MB of memory minus what the TLS stack and scan structures use. */
@@ -48,5 +50,24 @@ BOOL manifestTitleMatches(const char *manifest, const char *consoleId, const cha
 BOOL downloadGameDukex(const char *host, const char *port, const char *sessionKey,
                        const char *sourceConsoleId, const char *targetConsoleId,
                        const char *sourceProfile, const char *titleId, const char *destPath);
+
+/* ---- Optional Xbox LIVE (Insignia) account backup/transfer ---- */
+
+/* Returns TRUE if the user enabled account backup on the website (opt-in, off by
+ * default). enabledOut is set to the parsed flag. Returns FALSE on request error. */
+BOOL xblAccountSyncEnabled(const char *host, const char *port, const char *sessionKey,
+                           BOOL *enabledOut);
+
+/* Uploads the present account records to /api/me/xbox-account/upload. */
+BOOL uploadXblAccounts(const char *host, const char *port, const char *sessionKey,
+                       const char *consoleId, int partition, const XblAccountSet *set);
+
+/* Fetches the accounts queued to restore to this console as text lines
+ * ("id:slot:xuid:blobBase64"). Returns TRUE on a 2xx response. */
+BOOL fetchXblRestore(const char *host, const char *port, const char *sessionKey,
+                     const char *consoleId, char *out, size_t outsz);
+
+/* Tells the server an account row was written so it is not restored again. */
+BOOL confirmXblRestored(const char *host, const char *port, const char *sessionKey, const char *id);
 
 #endif

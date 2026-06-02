@@ -5,10 +5,13 @@
 #include <nxdk/mount.h>
 #include <nxdk/net.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <windows.h>
 
 #include "app_input.h"
 #include "app_ui.h"
+#include "base64.h"
 #include "eeprom_export.h"
 #include "net_auth.h"
 #include "report.h"
@@ -187,6 +190,92 @@ int main(void)
             saveSessionConsoleId(SESSION_PATH, consoleId);
         } else {
             ui_logf("  WARNING: console-data upload failed");
+        }
+    }
+
+    /* 5b. Optional Xbox LIVE (Insignia) account backup. On hard drives the account
+     * records live in the raw-disk config area (sectors 12-19, one 0x6C record per
+     * sector at offset 0x0C), NOT in a file. Nothing is uploaded unless the user
+     * turned this on at xb.live (off by default). */
+    if (loggedIn && consoleId[0]) {
+        XblAccountSet accts;
+        if (xblReadAccounts(&accts)) {
+            ui_logf("Xbox LIVE accounts found: %d", accts.presentCount);
+            for (int i = 0; i < XBL_ACCOUNT_MAX; i++) {
+                if (accts.slots[i].present) {
+                    ui_logf("  slot %d: %s", i, accts.slots[i].gamertag);
+                }
+            }
+            BOOL acctEnabled = FALSE;
+            if (xblAccountSyncEnabled(UPLOAD_HOST, UPLOAD_PORT, sessionKey, &acctEnabled) &&
+                acctEnabled) {
+                if (accts.presentCount > 0) {
+                    if (uploadXblAccounts(UPLOAD_HOST, UPLOAD_PORT, sessionKey, consoleId,
+                                          accts.partition, &accts)) {
+                        ui_logf("  Uploaded %d account(s) to xb.live", accts.presentCount);
+                    } else {
+                        ui_logf("  WARNING: account upload failed");
+                    }
+                }
+            }
+        } else {
+            ui_logf("Xbox LIVE accounts: none readable");
+        }
+
+        /* Restore any accounts the user queued for THIS Xbox on the website (mimics
+         * copying an account from a memory unit). */
+        static char restoreText[8192];
+        if (fetchXblRestore(UPLOAD_HOST, UPLOAD_PORT, sessionKey, consoleId, restoreText,
+                            sizeof(restoreText)) && restoreText[0]) {
+            XblAccountSet cur;
+            if (!xblReadAccounts(&cur)) {
+                memset(&cur, 0, sizeof(cur));
+            }
+            int restored = 0;
+            char *line = restoreText;
+            while (line && *line) {
+                char *nl = strchr(line, '\n');
+                if (nl) {
+                    *nl = '\0';
+                }
+                /* Line: "id:slot:xuid:blobBase64" */
+                char *c1 = strchr(line, ':');
+                char *c2 = c1 ? strchr(c1 + 1, ':') : NULL;
+                char *c3 = c2 ? strchr(c2 + 1, ':') : NULL;
+                if (c1 && c2 && c3) {
+                    *c1 = *c2 = *c3 = '\0';
+                    const char *idStr = line;
+                    int wantSlot = atoi(c1 + 1);
+                    const char *xuid = c2 + 1;
+                    const char *blobB64 = c3 + 1;
+                    unsigned char rec[XBL_ACCOUNT_LEN];
+                    int n = base64Decode(blobB64, rec, sizeof(rec));
+                    if (n == XBL_ACCOUNT_LEN) {
+                        int slot = (wantSlot >= 0 && wantSlot < XBL_ACCOUNT_MAX)
+                                       ? wantSlot
+                                       : xblPickRestoreSlot(&cur, xuid);
+                        if (slot >= 0 && xblWriteAccount(slot, rec)) {
+                            /* keep our local view in sync for subsequent picks */
+                            memcpy(cur.slots[slot].raw, rec, XBL_ACCOUNT_LEN);
+                            cur.slots[slot].present = TRUE;
+                            strncpy(cur.slots[slot].xuidHex, xuid,
+                                    sizeof(cur.slots[slot].xuidHex) - 1);
+                            confirmXblRestored(UPLOAD_HOST, UPLOAD_PORT, sessionKey, idStr);
+                            restored++;
+                            ui_logf("  Restored account to slot %d", slot);
+                        } else {
+                            ui_logf("  WARNING: no free account slot");
+                        }
+                    }
+                }
+                if (!nl) {
+                    break;
+                }
+                line = nl + 1;
+            }
+            if (restored > 0) {
+                ui_logf("  Installed %d Xbox LIVE account(s)", restored);
+            }
         }
     }
 

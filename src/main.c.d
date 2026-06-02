@@ -76,6 +76,7 @@
   /Users/x001100x/originalxboxgamesaves/nxdk/lib/pdclib/include/stdio.h \
   /Users/x001100x/originalxboxgamesaves/src/app_input.h \
   /Users/x001100x/originalxboxgamesaves/src/app_ui.h \
+  /Users/x001100x/originalxboxgamesaves/src/base64.h \
   /Users/x001100x/originalxboxgamesaves/src/eeprom_export.h \
   /Users/x001100x/originalxboxgamesaves/src/net_auth.h \
   /Users/x001100x/originalxboxgamesaves/src/report.h \
@@ -83,6 +84,7 @@
   /Users/x001100x/originalxboxgamesaves/src/session_store.h \
   /Users/x001100x/originalxboxgamesaves/src/unzip_export.h \
   /Users/x001100x/originalxboxgamesaves/src/upload.h \
+  /Users/x001100x/originalxboxgamesaves/src/xbl_account.h \
   /Users/x001100x/originalxboxgamesaves/src/xbmc_profiles.h \
   /Users/x001100x/originalxboxgamesaves/src/zip_export.h
 /Users/x001100x/originalxboxgamesaves/nxdk/lib/hal/debug.h:
@@ -161,6 +163,7 @@
 /Users/x001100x/originalxboxgamesaves/nxdk/lib/pdclib/include/stdio.h:
 /Users/x001100x/originalxboxgamesaves/src/app_input.h:
 /Users/x001100x/originalxboxgamesaves/src/app_ui.h:
+/Users/x001100x/originalxboxgamesaves/src/base64.h:
 /Users/x001100x/originalxboxgamesaves/src/eeprom_export.h:
 /Users/x001100x/originalxboxgamesaves/src/net_auth.h:
 /Users/x001100x/originalxboxgamesaves/src/report.h:
@@ -168,5 +171,6 @@
 /Users/x001100x/originalxboxgamesaves/src/session_store.h:
 /Users/x001100x/originalxboxgamesaves/src/unzip_export.h:
 /Users/x001100x/originalxboxgamesaves/src/upload.h:
+/Users/x001100x/originalxboxgamesaves/src/xbl_account.h:
 /Users/x001100x/originalxboxgamesaves/src/xbmc_profiles.h:
 /Users/x001100x/originalxboxgamesaves/src/zip_export.h:

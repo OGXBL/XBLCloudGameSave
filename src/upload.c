@@ -324,6 +324,138 @@ BOOL downloadGameDukex(const char *host, const char *port, const char *sessionKe
     return (r == 0) ? TRUE : FALSE;
 }
 
+BOOL xblAccountSyncEnabled(const char *host, const char *port, const char *sessionKey,
+                           BOOL *enabledOut)
+{
+    if (enabledOut) {
+        *enabledOut = FALSE;
+    }
+    char skHeader[256];
+    snprintf(skHeader, sizeof(skHeader), "X-Session-Key: %s", sessionKey);
+    const char *headers[] = { skHeader };
+    char path[256];
+    snprintf(path, sizeof(path), "/api/me/xbox-account/settings?sessionKey=%s", sessionKey);
+
+    char resp[UPLOAD_RESP_SIZE];
+    int r = https_request(host, port, "GET", path, "application/json", headers, 1, NULL, 0, resp,
+                          sizeof(resp), NULL, NULL);
+    if (r != 0 || !responseIsOk(resp)) {
+        return FALSE;
+    }
+    const char *body = strstr(resp, "\r\n\r\n");
+    if (body && strstr(body, "\"enabled\":true")) {
+        if (enabledOut) {
+            *enabledOut = TRUE;
+        }
+    }
+    return TRUE;
+}
+
+BOOL uploadXblAccounts(const char *host, const char *port, const char *sessionKey,
+                       const char *consoleId, int partition, const XblAccountSet *set)
+{
+    if (!set || set->presentCount <= 0) {
+        return TRUE; /* nothing to upload is not an error */
+    }
+
+    size_t cap = 2048;
+    size_t len = 0;
+    char *body = (char *)malloc(cap);
+    if (!body) {
+        return FALSE;
+    }
+    body[0] = '\0';
+
+    char partStr[16];
+    snprintf(partStr, sizeof(partStr), "%d", partition);
+
+    BOOL ok = appendStr(&body, &len, &cap, "{\"sessionKey\":\"", FALSE) &&
+              appendStr(&body, &len, &cap, sessionKey, TRUE) &&
+              appendStr(&body, &len, &cap, "\",\"console_id\":\"", FALSE) &&
+              appendStr(&body, &len, &cap, consoleId ? consoleId : "", TRUE) &&
+              appendStr(&body, &len, &cap, "\",\"source_partition\":", FALSE) &&
+              appendStr(&body, &len, &cap, partStr, FALSE) &&
+              appendStr(&body, &len, &cap, ",\"accounts\":[", FALSE);
+
+    BOOL first = TRUE;
+    for (int i = 0; ok && i < XBL_ACCOUNT_MAX; i++) {
+        if (!set->slots[i].present) {
+            continue;
+        }
+        char *blobB64 = base64Encode(set->slots[i].raw, XBL_ACCOUNT_LEN);
+        if (!blobB64) {
+            ok = FALSE;
+            break;
+        }
+        ok = appendStr(&body, &len, &cap, first ? "{" : ",{", FALSE) &&
+             appendStr(&body, &len, &cap, "\"xuid\":\"", FALSE) &&
+             appendStr(&body, &len, &cap, set->slots[i].xuidHex, TRUE) &&
+             appendStr(&body, &len, &cap, "\",\"gamertag\":\"", FALSE) &&
+             appendStr(&body, &len, &cap, set->slots[i].gamertag, TRUE) &&
+             appendStr(&body, &len, &cap, "\",\"blob_base64\":\"", FALSE) &&
+             appendStr(&body, &len, &cap, blobB64, FALSE) &&
+             appendStr(&body, &len, &cap, "\"}", FALSE);
+        free(blobB64);
+        first = FALSE;
+    }
+    if (ok) {
+        ok = appendStr(&body, &len, &cap, "]}", FALSE);
+    }
+    if (!ok) {
+        free(body);
+        return FALSE;
+    }
+
+    char resp[UPLOAD_RESP_SIZE];
+    int r = https_request(host, port, "POST", "/api/me/xbox-account/upload", "application/json",
+                          NULL, 0, body, len, resp, sizeof(resp), NULL, NULL);
+    free(body);
+    return (r == 0) && responseIsOk(resp);
+}
+
+BOOL fetchXblRestore(const char *host, const char *port, const char *sessionKey,
+                     const char *consoleId, char *out, size_t outsz)
+{
+    if (outsz == 0) {
+        return FALSE;
+    }
+    out[0] = '\0';
+    char skHeader[256];
+    snprintf(skHeader, sizeof(skHeader), "X-Session-Key: %s", sessionKey);
+    const char *headers[] = { skHeader };
+    char path[320];
+    snprintf(path, sizeof(path), "/api/me/xbox-account/restore?console_id=%s&sessionKey=%s",
+             consoleId ? consoleId : "", sessionKey);
+
+    static char resp[8192];
+    int r = https_request(host, port, "GET", path, "application/json", headers, 1, NULL, 0, resp,
+                          sizeof(resp), NULL, NULL);
+    if (r != 0 || !responseIsOk(resp)) {
+        return FALSE;
+    }
+    const char *body = strstr(resp, "\r\n\r\n");
+    const char *start = body ? body + 4 : resp;
+    strncpy(out, start, outsz - 1);
+    out[outsz - 1] = '\0';
+    return TRUE;
+}
+
+BOOL confirmXblRestored(const char *host, const char *port, const char *sessionKey, const char *id)
+{
+    char path[256];
+    snprintf(path, sizeof(path), "/api/me/xbox-account/%s/restored", id ? id : "");
+    char skHeader[256];
+    snprintf(skHeader, sizeof(skHeader), "X-Session-Key: %s", sessionKey);
+    const char *headers[] = { skHeader };
+
+    char body[256];
+    int blen = snprintf(body, sizeof(body), "{\"sessionKey\":\"%s\"}", sessionKey);
+    char resp[UPLOAD_RESP_SIZE];
+    int r = https_request(host, port, "POST", path, "application/json", headers, 1, body, blen, resp,
+                          sizeof(resp), NULL, NULL);
+    return (r == 0) && responseIsOk(resp);
+}
+
 BOOL manifestTitleMatches(const char *manifest, const char *consoleId, const char *profile,
                           const char *titleId, const char *fingerprint)
 {

@@ -179,7 +179,7 @@ This app runs unsigned code, so it requires a **modded original Xbox**
    Subsequent runs reuse the saved login and skip the QR step.
 4. The app then scans, backs up, and uploads automatically, printing progress
    on screen. Only new or changed game saves are uploaded; unchanged games are
-   skipped. The local copy still lands in `E:\test\`.
+   skipped. The local copy still lands in `E:\GameSaves\`.
 5. Open the website, go to **Dashboard ▸ Game Saves**, and your games, EEPROM
    and (password-gated) HDD key are there.
 

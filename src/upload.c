@@ -326,8 +326,10 @@ BOOL manifestTitleMatches(const char *manifest, const char *consoleId, const cha
         if (p == manifest || p[-1] == '\n') {
             const char *val = p + nlen;
             size_t flen = strlen(fingerprint);
+            /* '|' terminates the fingerprint too (e.g. "...=<fp>|nosync"). */
             if (strncmp(val, fingerprint, flen) == 0 &&
-                (val[flen] == '\0' || val[flen] == '\r' || val[flen] == '\n')) {
+                (val[flen] == '\0' || val[flen] == '\r' || val[flen] == '\n' ||
+                 val[flen] == '|')) {
                 return TRUE;
             }
             return FALSE;

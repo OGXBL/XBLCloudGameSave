@@ -240,6 +240,17 @@ int main(void)
                 lineKey[k++] = *p++;
             }
             lineKey[k] = '\0';
+            /* Capture the rest of the line (value) to detect the "|nosync" marker, which
+             * means the website opted this save out of being synced back to the console. */
+            char lineVal[128];
+            int vk = 0;
+            while (*p && *p != '\r' && *p != '\n') {
+                if (vk < (int)sizeof(lineVal) - 1) {
+                    lineVal[vk++] = *p;
+                }
+                p++;
+            }
+            lineVal[vk] = '\0';
             while (*p && *p != '\n') {
                 p++;
             }
@@ -248,6 +259,9 @@ int main(void)
             }
             if (k == 0) {
                 continue;
+            }
+            if (strstr(lineVal, "|nosync") != NULL) {
+                continue; /* website disabled sync-back for this title */
             }
 
             char srcConsole[40];

@@ -97,16 +97,6 @@ it from the EEPROM at boot, correctly for every motherboard revision). It still
 dumps the raw EEPROM to `eeprom.bin` via `HalReadSMBusValue`, and reads the
 console serial number from that dump. See [`src/eeprom_export.c`](src/eeprom_export.c).
 
-### Zipping
-
-[`src/zip_export.c`](src/zip_export.c) uses [miniz](https://github.com/richgel999/miniz)
-(vendored in [`third_party/`](third_party/)). One archive is produced per game
-(per `UDATA\<TitleID>` folder). Each archive is streamed to disk through a WinAPI
-write callback, compressing one source file at a time, so a game's saves do not
-need to fit in the console's 64 MB of RAM. After an archive is written as
-`<TitleID>.zip` it is renamed to `<TitleID>.dukex` with `MoveFile` (see
-[`src/main.c`](src/main.c)).
-
 ### Login, saved sessions & incremental upload
 
 <img width="660" height="1434" alt="image0-3" src="https://github.com/user-attachments/assets/d613f1ec-3d98-4586-8e65-82848dd8a4d6" />
@@ -116,7 +106,7 @@ need to fit in the console's 64 MB of RAM. After an archive is written as
   [`third_party/https_client.c`](third_party/https_client.c) (lwIP sockets +
   mbed TLS, **certificate verification disabled** — demo-grade).
 - **Saved login:** after a successful login the session key is written to
-  `E:\test\insignia_session.txt` ([`src/session_store.c`](src/session_store.c)).
+  `E:\GameSaves\insignia_session.txt` ([`src/session_store.c`](src/session_store.c)).
   On the next run the app validates it against the Insignia auth API
   (`GET /api/auth/user`) and reuses it — the QR code only reappears if the
   session is missing or no longer valid.
@@ -139,8 +129,7 @@ need to fit in the console's 64 MB of RAM. After an archive is written as
   `E:\UDATA\<TitleID>\`. To avoid clobbering newer local saves, a title already
   present locally is never overwritten by the download step.
 - The destination host is set by `UPLOAD_HOST` / `UPLOAD_PORT` in
-  [`src/main.c`](src/main.c) (default `xb.live:443`). Change these to match your
-  deployment of the Insignia Stats server.
+  [`src/main.c`](src/main.c) (default `xb.live:443`).
 
 ## Building
 

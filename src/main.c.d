@@ -83,6 +83,7 @@
   /Users/x001100x/originalxboxgamesaves/src/session_store.h \
   /Users/x001100x/originalxboxgamesaves/src/unzip_export.h \
   /Users/x001100x/originalxboxgamesaves/src/upload.h \
+  /Users/x001100x/originalxboxgamesaves/src/xbmc_profiles.h \
   /Users/x001100x/originalxboxgamesaves/src/zip_export.h
 /Users/x001100x/originalxboxgamesaves/nxdk/lib/hal/debug.h:
 /Users/x001100x/originalxboxgamesaves/nxdk/lib/hal/video.h:
@@ -167,4 +168,5 @@
 /Users/x001100x/originalxboxgamesaves/src/session_store.h:
 /Users/x001100x/originalxboxgamesaves/src/unzip_export.h:
 /Users/x001100x/originalxboxgamesaves/src/upload.h:
+/Users/x001100x/originalxboxgamesaves/src/xbmc_profiles.h:
 /Users/x001100x/originalxboxgamesaves/src/zip_export.h:

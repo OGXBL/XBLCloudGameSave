@@ -16,6 +16,7 @@
 #include "session_store.h"
 #include "unzip_export.h"
 #include "upload.h"
+#include "xbmc_profiles.h"
 #include "zip_export.h"
 
 #define UDATA_PATH "E:\\UDATA"
@@ -59,6 +60,12 @@ int main(void)
             inputWaitExitToDashboard("Could not mount E: drive.", NULL);
             return 1;
         }
+    }
+
+    /* Best-effort mount of C: as well — XBMC4Gamers (and its UserData/profiles)
+     * commonly lives on C: or E:. Failure is non-fatal; detection just skips it. */
+    if (!nxIsDriveMounted('C')) {
+        nxMountDrive('C', "\\Device\\Harddisk0\\Partition2\\");
     }
 
     if (!CreateDirectory(OUTPUT_DIR, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
@@ -117,19 +124,52 @@ int main(void)
     }
 
     ui_setProgress(0.08f, "Scanning saves...");
-    /* 4. Scan UDATA and write the report. */
-    ui_logf("Scanning %s...", UDATA_PATH);
-    ScanResult scan;
-    BOOL haveScan = scanUdata(UDATA_PATH, &scan);
-    if (haveScan) {
-        ui_logf("  Found %d titles, %d saves", scan.titleCount, scan.totalSaveCount);
-        if (writeReport(REPORT_PATH, &scan)) {
+    /* 4. Detect XBMC per-profile saves, then scan each profile's UDATA. Without
+     * XBMC this is a single variation with an empty profile, so the scan/upload
+     * behaves exactly like before. */
+    XbmcVariation vars[XBMC_MAX_VARIATIONS];
+    int varCount = xbmcEnumerateVariations(UDATA_PATH, vars, XBMC_MAX_VARIATIONS);
+    if (varCount <= 0) {
+        varCount = 1;
+        vars[0].profileKey[0] = '\0';
+        vars[0].profileLabel[0] = '\0';
+        strncpy(vars[0].path, UDATA_PATH, sizeof(vars[0].path) - 1);
+        vars[0].path[sizeof(vars[0].path) - 1] = '\0';
+    }
+    if (varCount > 1 || vars[0].profileKey[0]) {
+        ui_logf("XBMC profiles detected: %d variation(s)", varCount);
+        for (int v = 0; v < varCount; v++) {
+            ui_logf("  profile[%d]: '%s' <- %s", v,
+                    vars[v].profileLabel[0] ? vars[v].profileLabel : "(default)", vars[v].path);
+        }
+    } else {
+        ui_logf("No XBMC profiles found - single UDATA");
+    }
+
+    ScanResult scans[XBMC_MAX_VARIATIONS];
+    BOOL haveScans[XBMC_MAX_VARIATIONS];
+    int grandTotalTitles = 0;
+    for (int v = 0; v < varCount; v++) {
+        if (vars[v].profileLabel[0]) {
+            ui_logf("Scanning %s [%s]...", vars[v].path, vars[v].profileLabel);
+        } else {
+            ui_logf("Scanning %s...", vars[v].path);
+        }
+        haveScans[v] = scanUdata(vars[v].path, &scans[v]);
+        if (haveScans[v]) {
+            ui_logf("  Found %d titles, %d saves", scans[v].titleCount, scans[v].totalSaveCount);
+            grandTotalTitles += scans[v].titleCount;
+        } else {
+            ui_logf("  WARNING: could not open %s", vars[v].path);
+        }
+    }
+    /* Report covers the active profile's UDATA (vars[0]). */
+    if (haveScans[0]) {
+        if (writeReport(REPORT_PATH, &scans[0])) {
             ui_logf("  Report written to saves_report.txt");
         } else {
             ui_logf("  WARNING: failed to write report");
         }
-    } else {
-        ui_logf("  WARNING: could not open %s", UDATA_PATH);
     }
 
     /* 5. Console data upload (EEPROM + HDD key) — tiny, always sent when logged in. */
@@ -160,58 +200,74 @@ int main(void)
     }
 
     ui_logf("Backing up each game...");
-    if (haveScan) {
+    if (grandTotalTitles > 0) {
         int created = 0, uploaded = 0, skipped = 0;
-        int uploadTotal = scan.titleCount > 0 ? scan.titleCount : 1;
+        int uploadTotal = grandTotalTitles > 0 ? grandTotalTitles : 1;
+        int doneCount = 0;
         if (loggedIn) {
-            ui_setUploadStats(0, scan.titleCount);
+            ui_setUploadStats(0, grandTotalTitles);
         }
-        for (int i = 0; i < scan.titleCount; i++) {
-            const TitleInfo *title = &scan.titles[i];
-            char gameName[META_NAME_MAX];
-            char progLabel[80];
-            titleDisplayName(title, gameName, sizeof(gameName));
-            snprintf(progLabel, sizeof(progLabel), "Processing %s", gameName);
-            ui_setProgress(0.15f + 0.65f * ((float)i / (float)uploadTotal), progLabel);
-
-            char fp[24];
-            titleFingerprintHex(title, fp, sizeof(fp));
-
-            if (loggedIn && manifestTitleMatches(manifest, consoleId, title->titleId, fp)) {
-                skipped++;
-                ui_logf("  %s unchanged (skip)", gameName);
-                continue; /* server already has this exact version */
-            }
-
-            char zipPath[MAX_PATH];
-            char dukexPath[MAX_PATH];
-            snprintf(zipPath, sizeof(zipPath), "%s\\%s.zip", OUTPUT_DIR, title->titleId);
-            snprintf(dukexPath, sizeof(dukexPath), "%s\\%s.dukex", OUTPUT_DIR, title->titleId);
-
-            if (!zipDirectory(title->path, zipPath)) {
-                ui_logf("  WARNING: failed to zip %s", gameName);
+        for (int v = 0; v < varCount; v++) {
+            if (!haveScans[v]) {
                 continue;
             }
-            DeleteFile(dukexPath);
-            if (!MoveFile(zipPath, dukexPath)) {
-                ui_logf("  WARNING: could not rename %s", gameName);
-                continue;
-            }
-            created++;
-
-            if (loggedIn) {
-                unsigned long long saveMod = titleLatestSaveUnix(title);
-                char manifestJson[4096];
-                manifestJson[0] = '\0';
-                titleManifestJson(title, manifestJson, sizeof(manifestJson));
-                if (uploadGameDukex(UPLOAD_HOST, UPLOAD_PORT, sessionKey, consoleId, hddKeyHex,
-                                    title->titleId, title->titleName, title->saveCount,
-                                    title->totalSize, fp, saveMod, manifestJson, dukexPath)) {
-                    uploaded++;
-                    ui_setUploadStats(uploaded, scan.titleCount);
-                    ui_logf("  Uploaded %s", gameName);
+            ScanResult *sc = &scans[v];
+            const char *profKey = vars[v].profileKey;
+            const char *profLabel = vars[v].profileLabel[0] ? vars[v].profileLabel : NULL;
+            for (int i = 0; i < sc->titleCount; i++) {
+                const TitleInfo *title = &sc->titles[i];
+                char gameName[META_NAME_MAX];
+                char progLabel[112];
+                titleDisplayName(title, gameName, sizeof(gameName));
+                if (profLabel) {
+                    snprintf(progLabel, sizeof(progLabel), "Processing %s [%s]", gameName, profLabel);
                 } else {
-                    ui_logf("  WARNING: upload failed for %s", gameName);
+                    snprintf(progLabel, sizeof(progLabel), "Processing %s", gameName);
+                }
+                ui_setProgress(0.15f + 0.65f * ((float)doneCount / (float)uploadTotal), progLabel);
+                doneCount++;
+
+                char fp[24];
+                titleFingerprintHex(title, fp, sizeof(fp));
+
+                if (loggedIn &&
+                    manifestTitleMatches(manifest, consoleId, profKey, title->titleId, fp)) {
+                    skipped++;
+                    ui_logf("  %s unchanged (skip)", gameName);
+                    continue; /* server already has this exact version */
+                }
+
+                char zipPath[MAX_PATH];
+                char dukexPath[MAX_PATH];
+                snprintf(zipPath, sizeof(zipPath), "%s\\%s.zip", OUTPUT_DIR, title->titleId);
+                snprintf(dukexPath, sizeof(dukexPath), "%s\\%s.dukex", OUTPUT_DIR, title->titleId);
+
+                if (!zipDirectory(title->path, zipPath)) {
+                    ui_logf("  WARNING: failed to zip %s", gameName);
+                    continue;
+                }
+                DeleteFile(dukexPath);
+                if (!MoveFile(zipPath, dukexPath)) {
+                    ui_logf("  WARNING: could not rename %s", gameName);
+                    continue;
+                }
+                created++;
+
+                if (loggedIn) {
+                    unsigned long long saveMod = titleLatestSaveUnix(title);
+                    char manifestJson[4096];
+                    manifestJson[0] = '\0';
+                    titleManifestJson(title, manifestJson, sizeof(manifestJson));
+                    if (uploadGameDukex(UPLOAD_HOST, UPLOAD_PORT, sessionKey, consoleId, hddKeyHex,
+                                        profKey, profLabel, title->titleId, title->titleName,
+                                        title->saveCount, title->totalSize, fp, saveMod,
+                                        manifestJson, dukexPath)) {
+                        uploaded++;
+                        ui_setUploadStats(uploaded, grandTotalTitles);
+                        ui_logf("  Uploaded %s", gameName);
+                    } else {
+                        ui_logf("  WARNING: upload failed for %s", gameName);
+                    }
                 }
             }
         }
@@ -225,16 +281,20 @@ int main(void)
         ui_logf("View saves on xb.live (Game Saves tab)");
     }
 
-    /* 7. Pull down any game saves that exist on the server but not on this Xbox,
-     * extracting them into E:\UDATA\<TitleID>\. */
+    /* 7. Pull down the game saves the website chose to sync back (sync-enabled,
+     * from another Xbox/profile), extracting them into the active E:\UDATA\<TitleID>\.
+     * The user picks which profile variation to sync on the dashboard, so we just
+     * honour the manifest here. */
     if (loggedIn && manifest[0]) {
         ui_setProgress(0.90f, "Checking downloads...");
         ui_logf("Checking for saves to download...");
         CreateDirectory(UDATA_PATH, NULL);
         int pulled = 0;
+        char pulledTids[64][64];
+        int pulledCount = 0;
         const char *p = manifest;
         while (*p) {
-            char lineKey[96];
+            char lineKey[128];
             int k = 0;
             while (*p && *p != '=' && *p != '\r' && *p != '\n' && k < (int)sizeof(lineKey) - 1) {
                 lineKey[k++] = *p++;
@@ -264,20 +324,35 @@ int main(void)
                 continue; /* website disabled sync-back for this title */
             }
 
+            /* Key format: "console_id:profile:title_id" (profile may be empty);
+             * older servers may send "console_id:title_id" or just "title_id". */
             char srcConsole[40];
+            char srcProfile[40];
             char tid[64];
             srcConsole[0] = '\0';
+            srcProfile[0] = '\0';
             tid[0] = '\0';
             {
-                const char *colon = strchr(lineKey, ':');
-                if (colon) {
-                    size_t clen = (size_t)(colon - lineKey);
+                const char *c1 = strchr(lineKey, ':');
+                if (c1) {
+                    size_t clen = (size_t)(c1 - lineKey);
                     if (clen < sizeof(srcConsole)) {
                         memcpy(srcConsole, lineKey, clen);
                         srcConsole[clen] = '\0';
                     }
-                    strncpy(tid, colon + 1, sizeof(tid) - 1);
-                    tid[sizeof(tid) - 1] = '\0';
+                    const char *c2 = strchr(c1 + 1, ':');
+                    if (c2) {
+                        size_t plen = (size_t)(c2 - (c1 + 1));
+                        if (plen < sizeof(srcProfile)) {
+                            memcpy(srcProfile, c1 + 1, plen);
+                            srcProfile[plen] = '\0';
+                        }
+                        strncpy(tid, c2 + 1, sizeof(tid) - 1);
+                        tid[sizeof(tid) - 1] = '\0';
+                    } else {
+                        strncpy(tid, c1 + 1, sizeof(tid) - 1);
+                        tid[sizeof(tid) - 1] = '\0';
+                    }
                 } else {
                     strncpy(tid, lineKey, sizeof(tid) - 1);
                     tid[sizeof(tid) - 1] = '\0';
@@ -287,20 +362,33 @@ int main(void)
                 continue;
             }
             if (srcConsole[0] && consoleId[0] && strcmp(srcConsole, consoleId) == 0) {
-                continue; /* already uploaded from this console */
+                continue; /* already uploaded from this console (any profile) */
             }
 
+            /* Skip if the active UDATA already has this title. */
             BOOL localHasIt = FALSE;
-            if (haveScan) {
-                for (int i = 0; i < scan.titleCount; i++) {
-                    if (strcmp(scan.titles[i].titleId, tid) == 0) {
+            if (haveScans[0]) {
+                for (int i = 0; i < scans[0].titleCount; i++) {
+                    if (strcmp(scans[0].titles[i].titleId, tid) == 0) {
                         localHasIt = TRUE;
                         break;
                     }
                 }
             }
             if (localHasIt) {
-                continue; /* UDATA folder already has this title */
+                continue;
+            }
+
+            /* Only restore one variation per title per run (first sync-enabled wins). */
+            BOOL already = FALSE;
+            for (int j = 0; j < pulledCount; j++) {
+                if (strcmp(pulledTids[j], tid) == 0) {
+                    already = TRUE;
+                    break;
+                }
+            }
+            if (already) {
+                continue;
             }
 
             char dukexPath[MAX_PATH];
@@ -310,12 +398,17 @@ int main(void)
 
             if (!downloadGameDukex(UPLOAD_HOST, UPLOAD_PORT, sessionKey,
                                    srcConsole[0] ? srcConsole : "legacy",
-                                   consoleId[0] ? consoleId : "", tid, dukexPath)) {
+                                   consoleId[0] ? consoleId : "", srcProfile, tid, dukexPath)) {
                 ui_logf("  WARNING: download failed for %s", tid);
                 continue;
             }
             if (unzipToDir(dukexPath, destDir)) {
                 pulled++;
+                if (pulledCount < 64) {
+                    strncpy(pulledTids[pulledCount], tid, sizeof(pulledTids[0]) - 1);
+                    pulledTids[pulledCount][sizeof(pulledTids[0]) - 1] = '\0';
+                    pulledCount++;
+                }
                 ui_logf("  Restored %s", tid);
             } else {
                 ui_logf("  WARNING: could not extract %s", tid);
@@ -325,8 +418,10 @@ int main(void)
         ui_logf("  Downloaded %d save(s) from server", pulled);
     }
 
-    if (haveScan) {
-        freeScanResult(&scan);
+    for (int v = 0; v < varCount; v++) {
+        if (haveScans[v]) {
+            freeScanResult(&scans[v]);
+        }
     }
 
     {

@@ -30,6 +30,7 @@ SRCS = \
 	$(CURDIR)/src/base64.c \
 	$(CURDIR)/src/session_store.c \
 	$(CURDIR)/src/upload.c \
+	$(CURDIR)/src/xbmc_profiles.c \
 	$(CURDIR)/third_party/https_client.c \
 	$(CURDIR)/third_party/qrcodegen.c \
 	$(CURDIR)/third_party/nxdk_entropy.c \

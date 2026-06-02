@@ -19,8 +19,13 @@ BOOL uploadConsoleData(const char *host, const char *port, const char *sessionKe
 /* Reads dukexPath and POSTs it as a raw binary body to /api/me/xbox-saves/game,
  * with metadata in the query string/headers (including the fingerprint used for
  * incremental uploads). Returns TRUE on a 2xx response. */
+/* profile is the XBMC profile key ("" for the default / non-XBMC dashboard, which
+ * behaves exactly as before). When non-empty the save is stored separately on the
+ * server so different profiles' saves for the same game never overwrite each other.
+ * profileLabel is the human-readable profile name for the website (may be NULL). */
 BOOL uploadGameDukex(const char *host, const char *port, const char *sessionKey,
                      const char *consoleId, const char *hddKeyHex,
+                     const char *profile, const char *profileLabel,
                      const char *titleId, const char *titleName,
                      int saveCount, unsigned long long totalBytes, const char *fingerprint,
                      unsigned long long saveModifiedUnix, const char *manifestJson,
@@ -31,15 +36,17 @@ BOOL uploadGameDukex(const char *host, const char *port, const char *sessionKey,
 BOOL fetchSavesManifest(const char *host, const char *port, const char *sessionKey, char *out,
                         size_t outsz);
 
-/* Returns TRUE if manifest contains "titleId=fingerprint" (i.e. the server
- * already has this exact version and the upload can be skipped). */
-BOOL manifestTitleMatches(const char *manifest, const char *consoleId, const char *titleId,
-                          const char *fingerprint);
+/* Returns TRUE if manifest contains "consoleId:profile:titleId=fingerprint" (i.e.
+ * the server already has this exact version for this profile and the upload can be
+ * skipped). profile may be "" for the default / non-XBMC case. */
+BOOL manifestTitleMatches(const char *manifest, const char *consoleId, const char *profile,
+                          const char *titleId, const char *fingerprint);
 
 /* Downloads a title's .dukex archive from /api/me/xbox-saves/download/<titleId>
- * to destPath. Returns TRUE on a 2xx response (file written). */
+ * to destPath. sourceProfile is the XBMC profile the save belongs to on the server
+ * ("" for default). Returns TRUE on a 2xx response (file written). */
 BOOL downloadGameDukex(const char *host, const char *port, const char *sessionKey,
                        const char *sourceConsoleId, const char *targetConsoleId,
-                       const char *titleId, const char *destPath);
+                       const char *sourceProfile, const char *titleId, const char *destPath);
 
 #endif

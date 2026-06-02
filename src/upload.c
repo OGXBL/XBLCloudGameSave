@@ -170,6 +170,7 @@ BOOL uploadConsoleData(const char *host, const char *port, const char *sessionKe
 
 BOOL uploadGameDukex(const char *host, const char *port, const char *sessionKey,
                      const char *consoleId, const char *hddKeyHex,
+                     const char *profile, const char *profileLabel,
                      const char *titleId, const char *titleName, int saveCount,
                      unsigned long long totalBytes, const char *fingerprint,
                      unsigned long long saveModifiedUnix, const char *manifestJson,
@@ -215,12 +216,12 @@ BOOL uploadGameDukex(const char *host, const char *port, const char *sessionKey,
     /* Always send the HDD key so the server can derive a stable console_id even
      * when the session has no console_id yet (e.g. first run / console-data retry).
      * This keeps every backup from the same Xbox under one console_id. */
-    char path[768];
+    char path[820];
     snprintf(path, sizeof(path),
-             "/api/me/xbox-saves/game?title_id=%s&console_id=%s&hdd_key_hex=%s&save_count=%d&total_bytes=%llu&fingerprint=%s&save_modified=%llu",
+             "/api/me/xbox-saves/game?title_id=%s&console_id=%s&hdd_key_hex=%s&profile=%s&save_count=%d&total_bytes=%llu&fingerprint=%s&save_modified=%llu",
              titleId, consoleId && consoleId[0] ? consoleId : "unknown",
-             hddKeyHex && hddKeyHex[0] ? hddKeyHex : "", saveCount, totalBytes,
-             fingerprint ? fingerprint : "", saveModifiedUnix);
+             hddKeyHex && hddKeyHex[0] ? hddKeyHex : "", profile ? profile : "", saveCount,
+             totalBytes, fingerprint ? fingerprint : "", saveModifiedUnix);
 
     char skHeader[256];
     snprintf(skHeader, sizeof(skHeader), "X-Session-Key: %s", sessionKey);
@@ -230,6 +231,17 @@ BOOL uploadGameDukex(const char *host, const char *port, const char *sessionKey,
     char nameHeader[512];
     snprintf(nameHeader, sizeof(nameHeader), "X-Title-Name-B64: %s", nameB64 ? nameB64 : "");
     free(nameB64);
+
+    /* Human-readable profile name for the website (base64 so spaces survive headers). */
+    char profileHeader[256];
+    profileHeader[0] = '\0';
+    if (profileLabel && profileLabel[0]) {
+        char *plB64 = base64Encode((const unsigned char *)profileLabel, strlen(profileLabel));
+        if (plB64) {
+            snprintf(profileHeader, sizeof(profileHeader), "X-Profile-Label-B64: %s", plB64);
+            free(plB64);
+        }
+    }
 
     char *manifestB64 = NULL;
     char manifestHeader[7168];
@@ -241,10 +253,13 @@ BOOL uploadGameDukex(const char *host, const char *port, const char *sessionKey,
         }
     }
 
-    const char *headers[4];
+    const char *headers[5];
     int nHeaders = 0;
     headers[nHeaders++] = skHeader;
     headers[nHeaders++] = nameHeader;
+    if (profileHeader[0]) {
+        headers[nHeaders++] = profileHeader;
+    }
     if (manifestHeader[0]) {
         headers[nHeaders++] = manifestHeader;
     }
@@ -291,13 +306,14 @@ BOOL fetchSavesManifest(const char *host, const char *port, const char *sessionK
 
 BOOL downloadGameDukex(const char *host, const char *port, const char *sessionKey,
                        const char *sourceConsoleId, const char *targetConsoleId,
-                       const char *titleId, const char *destPath)
+                       const char *sourceProfile, const char *titleId, const char *destPath)
 {
     char path[512];
     snprintf(path, sizeof(path),
-             "/api/me/xbox-saves/download/%s?console_id=%s&target_console_id=%s", titleId,
+             "/api/me/xbox-saves/download/%s?console_id=%s&target_console_id=%s&profile=%s", titleId,
              sourceConsoleId && sourceConsoleId[0] ? sourceConsoleId : "",
-             targetConsoleId && targetConsoleId[0] ? targetConsoleId : "");
+             targetConsoleId && targetConsoleId[0] ? targetConsoleId : "",
+             sourceProfile ? sourceProfile : "");
 
     char skHeader[256];
     snprintf(skHeader, sizeof(skHeader), "X-Session-Key: %s", sessionKey);
@@ -308,15 +324,16 @@ BOOL downloadGameDukex(const char *host, const char *port, const char *sessionKe
     return (r == 0) ? TRUE : FALSE;
 }
 
-BOOL manifestTitleMatches(const char *manifest, const char *consoleId, const char *titleId,
-                          const char *fingerprint)
+BOOL manifestTitleMatches(const char *manifest, const char *consoleId, const char *profile,
+                          const char *titleId, const char *fingerprint)
 {
     if (!manifest || !titleId || !fingerprint || !fingerprint[0]) {
         return FALSE;
     }
-    char needle[96];
+    char needle[128];
     if (consoleId && consoleId[0]) {
-        snprintf(needle, sizeof(needle), "%s:%s=", consoleId, titleId);
+        /* Server emits "console_id:profile:title_id=" (profile may be empty). */
+        snprintf(needle, sizeof(needle), "%s:%s:%s=", consoleId, profile ? profile : "", titleId);
     } else {
         snprintf(needle, sizeof(needle), "%s=", titleId);
     }

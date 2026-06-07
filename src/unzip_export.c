@@ -5,6 +5,8 @@
 
 #include "miniz.h"
 
+#define XBL_SYNC_TIMES_NAME "_xbl_sync.txt"
+
 static size_t unzipReadCallback(void *opaque, mz_uint64 ofs, void *buf, size_t n)
 {
     HANDLE h = *(HANDLE *)opaque;
@@ -117,4 +119,91 @@ BOOL unzipToDir(const char *dukexPath, const char *destDir)
     mz_zip_reader_end(&zip);
     CloseHandle(in);
     return ok;
+}
+
+static void unixToFileTime(unsigned long long unixSec, FILETIME *ft)
+{
+    ULARGE_INTEGER u;
+    u.QuadPart = unixSec * 10000000ULL + 116444736000000000ULL;
+    ft->dwLowDateTime = u.LowPart;
+    ft->dwHighDateTime = u.HighPart;
+}
+
+static void setPathTimes(const char *path, unsigned long long unixSec)
+{
+    if (!path || !path[0] || unixSec == 0) {
+        return;
+    }
+    FILETIME ft;
+    unixToFileTime(unixSec, &ft);
+    HANDLE h = CreateFile(path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                          OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (h != INVALID_HANDLE_VALUE) {
+        SetFileTime(h, &ft, &ft, &ft);
+        CloseHandle(h);
+    }
+}
+
+void unzipApplySyncTimes(const char *destDir)
+{
+    if (!destDir || !destDir[0]) {
+        return;
+    }
+    char sidecar[MAX_PATH];
+    snprintf(sidecar, sizeof(sidecar), "%s\\%s", destDir, XBL_SYNC_TIMES_NAME);
+
+    HANDLE h = CreateFile(sidecar, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                          FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    char buf[4096];
+    DWORD got = 0;
+    if (!ReadFile(h, buf, sizeof(buf) - 1, &got, NULL) || got == 0) {
+        CloseHandle(h);
+        return;
+    }
+    CloseHandle(h);
+    buf[got] = '\0';
+
+    unsigned long long titleTime = 0;
+    char *line = buf;
+    while (line && *line) {
+        char *nl = strchr(line, '\n');
+        if (nl) {
+            *nl = '\0';
+        }
+        char *eq = strchr(line, '=');
+        if (eq) {
+            *eq = '\0';
+            const char *folder = line;
+            unsigned long long t = 0;
+            for (const char *p = eq + 1; *p >= '0' && *p <= '9'; p++) {
+                t = t * 10ULL + (unsigned long long)(*p - '0');
+            }
+            if (t > 0) {
+                if (strcmp(folder, "_title") == 0) {
+                    titleTime = t;
+                } else {
+                    char savePath[MAX_PATH];
+                    snprintf(savePath, sizeof(savePath), "%s\\%s", destDir, folder);
+                    setPathTimes(savePath, t);
+                    if (t > titleTime) {
+                        titleTime = t;
+                    }
+                }
+            }
+        }
+        if (!nl) {
+            break;
+        }
+        line = nl + 1;
+    }
+
+    if (titleTime > 0) {
+        setPathTimes(destDir, titleTime);
+    }
+
+    DeleteFile(sidecar);
 }

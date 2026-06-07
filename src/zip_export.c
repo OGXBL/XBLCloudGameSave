@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "miniz.h"
+#include "scan_udata.h"
 
 /* Largest single file we will read into RAM to compress. Save files are tiny;
  * anything larger is skipped (and noted by the caller's overall result) so a
@@ -96,10 +97,12 @@ static void addDirectory(mz_zip_archive *zip, const char *fullPath,
     FindClose(find);
 }
 
+#define XBL_SYNC_TIMES_NAME "_xbl_sync.txt"
+
 BOOL zipDirectory(const char *srcDir, const char *zipPath)
 {
-    HANDLE out = CreateFile(zipPath, GENERIC_WRITE, 0, NULL,
-                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE out = CreateFile(zipPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                            NULL);
     if (out == INVALID_HANDLE_VALUE) {
         return FALSE;
     }
@@ -115,6 +118,42 @@ BOOL zipDirectory(const char *srcDir, const char *zipPath)
     }
 
     addDirectory(&zip, srcDir, "");
+
+    BOOL ok = mz_zip_writer_finalize_archive(&zip) ? TRUE : FALSE;
+    mz_zip_writer_end(&zip);
+    CloseHandle(out);
+    return ok;
+}
+
+BOOL zipTitleDirectory(const TitleInfo *title, const char *zipPath)
+{
+    if (!title || !title->path[0]) {
+        return FALSE;
+    }
+
+    HANDLE out = CreateFile(zipPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                            NULL);
+    if (out == INVALID_HANDLE_VALUE) {
+        return FALSE;
+    }
+
+    mz_zip_archive zip;
+    memset(&zip, 0, sizeof(zip));
+    zip.m_pWrite = zipWriteCallback;
+    zip.m_pIO_opaque = out;
+
+    if (!mz_zip_writer_init_v2(&zip, 0, MZ_ZIP_FLAG_WRITE_ZIP64)) {
+        CloseHandle(out);
+        return FALSE;
+    }
+
+    addDirectory(&zip, title->path, "");
+
+    char times[2048];
+    if (titleSyncTimesText(title, times, sizeof(times))) {
+        mz_zip_writer_add_mem(&zip, XBL_SYNC_TIMES_NAME, times, strlen(times),
+                              MZ_DEFAULT_COMPRESSION);
+    }
 
     BOOL ok = mz_zip_writer_finalize_archive(&zip) ? TRUE : FALSE;
     mz_zip_writer_end(&zip);

@@ -36,6 +36,7 @@
   /Users/x001100x/originalxboxgamesaves/nxdk/lib/winapi/sysinfoapi.h \
   /Users/x001100x/originalxboxgamesaves/nxdk/lib/winapi/timezoneapi.h \
   /Users/x001100x/originalxboxgamesaves/nxdk/lib/winapi/winerror.h \
+  /Users/x001100x/originalxboxgamesaves/src/scan_udata.h \
   /Users/x001100x/originalxboxgamesaves/nxdk/lib/pdclib/include/stdio.h \
   /Users/x001100x/originalxboxgamesaves/nxdk/lib/pdclib/include/stdlib.h \
   /Users/x001100x/originalxboxgamesaves/nxdk/lib/xboxrt/libc_extensions/wchar.h \
@@ -80,6 +81,7 @@
 /Users/x001100x/originalxboxgamesaves/nxdk/lib/winapi/sysinfoapi.h:
 /Users/x001100x/originalxboxgamesaves/nxdk/lib/winapi/timezoneapi.h:
 /Users/x001100x/originalxboxgamesaves/nxdk/lib/winapi/winerror.h:
+/Users/x001100x/originalxboxgamesaves/src/scan_udata.h:
 /Users/x001100x/originalxboxgamesaves/nxdk/lib/pdclib/include/stdio.h:
 /Users/x001100x/originalxboxgamesaves/nxdk/lib/pdclib/include/stdlib.h:
 /Users/x001100x/originalxboxgamesaves/nxdk/lib/xboxrt/libc_extensions/wchar.h:

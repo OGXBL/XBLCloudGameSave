@@ -5,6 +5,56 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int fileTimeCompare(const FILETIME *a, const FILETIME *b)
+{
+    ULARGE_INTEGER ua, ub;
+    ua.LowPart = a->dwLowDateTime;
+    ua.HighPart = a->dwHighDateTime;
+    ub.LowPart = b->dwLowDateTime;
+    ub.HighPart = b->dwHighDateTime;
+    if (ua.QuadPart > ub.QuadPart) {
+        return 1;
+    }
+    if (ua.QuadPart < ub.QuadPart) {
+        return -1;
+    }
+    return 0;
+}
+
+static void fileTimeMax(FILETIME *latest, const FILETIME *candidate)
+{
+    if (fileTimeCompare(candidate, latest) > 0) {
+        *latest = *candidate;
+    }
+}
+
+static void saveLatestWriteTime(const char *path, FILETIME *latest)
+{
+    char pattern[MAX_PATH];
+    snprintf(pattern, sizeof(pattern), "%s\\*", path);
+
+    WIN32_FIND_DATA fd;
+    HANDLE h = FindFirstFile(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    do {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) {
+            continue;
+        }
+        char child[MAX_PATH];
+        snprintf(child, sizeof(child), "%s\\%s", path, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            saveLatestWriteTime(child, latest);
+        } else {
+            fileTimeMax(latest, &fd.ftLastWriteTime);
+        }
+    } while (FindNextFile(h, &fd));
+
+    FindClose(h);
+}
+
 static unsigned long long dirSize(const char *path, int *fileCount)
 {
     char pattern[MAX_PATH];
@@ -71,10 +121,12 @@ static void scanSaves(TitleInfo *title)
         SaveInfo *save = &title->saves[title->saveCount];
         memset(save, 0, sizeof(*save));
         strncpy(save->folderName, fd.cFileName, sizeof(save->folderName) - 1);
-        save->lastWrite = fd.ftLastWriteTime;
 
         char savePath[MAX_PATH];
         snprintf(savePath, sizeof(savePath), "%s\\%s", title->path, fd.cFileName);
+
+        save->lastWrite = fd.ftLastWriteTime;
+        saveLatestWriteTime(savePath, &save->lastWrite);
 
         char metaPath[MAX_PATH];
         snprintf(metaPath, sizeof(metaPath), "%s\\SaveMeta.xbx", savePath);
@@ -183,6 +235,88 @@ unsigned long long titleLatestSaveUnix(const TitleInfo *title)
         }
     }
     return latest;
+}
+
+static BOOL titleIdEqual(const char *a, const char *b)
+{
+    if (!a || !b) {
+        return FALSE;
+    }
+    while (*a && *b) {
+        char ca = *a;
+        char cb = *b;
+        if (ca >= 'A' && ca <= 'Z') {
+            ca = (char)(ca - 'A' + 'a');
+        }
+        if (cb >= 'A' && cb <= 'Z') {
+            cb = (char)(cb - 'A' + 'a');
+        }
+        if (ca != cb) {
+            return FALSE;
+        }
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+unsigned long long scanTitleLatestUnix(const ScanResult *scan, const char *titleId)
+{
+    if (!scan || !titleId || !titleId[0]) {
+        return 0;
+    }
+    for (int i = 0; i < scan->titleCount; i++) {
+        if (titleIdEqual(scan->titles[i].titleId, titleId)) {
+            return titleLatestSaveUnix(&scan->titles[i]);
+        }
+    }
+    return 0;
+}
+
+BOOL scanTitleFingerprint(const ScanResult *scan, const char *titleId, char *out, size_t outsz)
+{
+    if (out && outsz > 0) {
+        out[0] = '\0';
+    }
+    if (!scan || !titleId || !titleId[0] || !out || outsz == 0) {
+        return FALSE;
+    }
+    for (int i = 0; i < scan->titleCount; i++) {
+        if (titleIdEqual(scan->titles[i].titleId, titleId)) {
+            titleFingerprintHex(&scan->titles[i], out, outsz);
+            return out[0] != '\0';
+        }
+    }
+    return FALSE;
+}
+
+BOOL titleSyncTimesText(const TitleInfo *title, char *out, size_t outsz)
+{
+    if (!out || outsz < 8 || !title) {
+        return FALSE;
+    }
+    size_t pos = 0;
+    for (int i = 0; i < title->saveCount; i++) {
+        const SaveInfo *s = &title->saves[i];
+        unsigned long long t = fileTimeToUnix(&s->lastWrite);
+        if (t == 0) {
+            continue;
+        }
+        int n = snprintf(out + pos, outsz - pos, "%s=%llu\n", s->folderName, t);
+        if (n < 0 || (size_t)n >= outsz - pos) {
+            return FALSE;
+        }
+        pos += (size_t)n;
+    }
+    if (pos == 0) {
+        unsigned long long t = titleLatestSaveUnix(title);
+        if (t == 0) {
+            out[0] = '\0';
+            return FALSE;
+        }
+        snprintf(out, outsz, "_title=%llu\n", t);
+    }
+    return TRUE;
 }
 
 static void jsonAppendChar(char *out, size_t *pos, size_t cap, char c)

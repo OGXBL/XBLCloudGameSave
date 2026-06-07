@@ -36,6 +36,23 @@ static void ui_putPixel(volatile uint32_t *fb, int W, int H, int x, int y, uint3
     }
 }
 
+/* Linear blend of two 0x00RRGGBB colors. t is 0..255 (0 = a, 255 = b). */
+static uint32_t ui_mix(uint32_t a, uint32_t b, int t)
+{
+    if (t < 0) {
+        t = 0;
+    }
+    if (t > 255) {
+        t = 255;
+    }
+    int ar = (int)((a >> 16) & 0xFF), ag = (int)((a >> 8) & 0xFF), ab = (int)(a & 0xFF);
+    int br = (int)((b >> 16) & 0xFF), bg = (int)((b >> 8) & 0xFF), bb = (int)(b & 0xFF);
+    int rr = ar + (br - ar) * t / 255;
+    int rg = ag + (bg - ag) * t / 255;
+    int rb = ab + (bb - ab) * t / 255;
+    return ((uint32_t)rr << 16) | ((uint32_t)rg << 8) | (uint32_t)rb;
+}
+
 void ui_syncFb(void)
 {
     XVideoFlushFB();
@@ -50,6 +67,58 @@ void ui_fill(uint32_t color)
     for (unsigned y = 0; y < H; y++) {
         for (unsigned x = 0; x < W; x++) {
             fb[y * W + x] = color;
+        }
+    }
+}
+
+void ui_fillGradient(uint32_t top, uint32_t bottom)
+{
+    VIDEO_MODE vm = XVideoGetMode();
+    volatile uint32_t *fb = (volatile uint32_t *)XVideoGetFB();
+    unsigned W = (unsigned)vm.width;
+    unsigned H = (unsigned)vm.height;
+    for (unsigned y = 0; y < H; y++) {
+        uint32_t row = ui_mix(top, bottom, H > 1 ? (int)(y * 255u / (H - 1)) : 0);
+        for (unsigned x = 0; x < W; x++) {
+            fb[y * W + x] = row;
+        }
+    }
+}
+
+void ui_fillBackground(void)
+{
+    ui_fillGradient(UI_COL_BG_TOP, UI_COL_BG_BOT);
+}
+
+void ui_drawDisc(int cx, int cy, int radius, uint32_t color)
+{
+    if (radius < 1) {
+        radius = 1;
+    }
+    VIDEO_MODE vm = XVideoGetMode();
+    volatile uint32_t *fb = (volatile uint32_t *)XVideoGetFB();
+    int W = vm.width;
+    int H = vm.height;
+    int r2 = radius * radius;
+    /* +1px soft edge: pixels just outside the radius blend toward the existing
+     * framebuffer so the dots don't look jagged. */
+    int ro2 = (radius + 1) * (radius + 1);
+    for (int dy = -radius - 1; dy <= radius + 1; dy++) {
+        int py = cy + dy;
+        if (py < 0 || py >= H) {
+            continue;
+        }
+        for (int dx = -radius - 1; dx <= radius + 1; dx++) {
+            int px = cx + dx;
+            if (px < 0 || px >= W) {
+                continue;
+            }
+            int d2 = dx * dx + dy * dy;
+            if (d2 <= r2) {
+                fb[py * W + px] = color;
+            } else if (d2 <= ro2) {
+                fb[py * W + px] = ui_mix(fb[py * W + px], color, 110);
+            }
         }
     }
 }
@@ -119,6 +188,66 @@ void ui_drawLogoScaled(int x, int y, int size)
     }
 }
 
+/* 12-point unit circle (cos, sin) at 30-degree steps, starting from the top and
+ * going clockwise. Precomputed so we don't pull in libm just for the spinner. */
+#define UI_SPIN_SEGS 12
+static const float ui_spinCos[UI_SPIN_SEGS] = {
+    0.000f,  0.500f,  0.866f,  1.000f,  0.866f,  0.500f,
+    0.000f, -0.500f, -0.866f, -1.000f, -0.866f, -0.500f
+};
+static const float ui_spinSin[UI_SPIN_SEGS] = {
+    -1.000f, -0.866f, -0.500f, 0.000f, 0.500f, 0.866f,
+    1.000f,  0.866f,  0.500f,  0.000f, -0.500f, -0.866f
+};
+
+void ui_drawSpinner(int cx, int cy, int radius, int frame)
+{
+    int head = ((frame % UI_SPIN_SEGS) + UI_SPIN_SEGS) % UI_SPIN_SEGS;
+    int dot = radius / 5;
+    if (dot < 3) {
+        dot = 3;
+    }
+    for (int i = 0; i < UI_SPIN_SEGS; i++) {
+        int px = cx + (int)(ui_spinCos[i] * (float)radius);
+        int py = cy + (int)(ui_spinSin[i] * (float)radius);
+
+        /* Distance behind the rotating head; the head is brightest and the
+         * trail fades back toward the dim track colour. */
+        int d = (head - i + UI_SPIN_SEGS) % UI_SPIN_SEGS;
+        int t = 255 - (d * 255 / (UI_SPIN_SEGS - 1));
+        uint32_t col = ui_mix(UI_COL_BAR_BG, UI_COL_ORANGE, t);
+        /* Leading dot a touch larger for a comet-like head. */
+        ui_drawDisc(px, py, d == 0 ? dot + 1 : dot, col);
+    }
+}
+
+void ui_showBootScreen(const char *status)
+{
+    static int s_bootFrame = 0;
+    VIDEO_MODE vm = XVideoGetMode();
+    int W = vm.width;
+    int cx = W / 2;
+
+    ui_fillBackground();
+
+    /* Logo sitting above the spinner. */
+    int logoSize = 132;
+    ui_drawLogoScaled(cx - logoSize / 2, 96, logoSize);
+
+    ui_drawSpinner(cx, 300, 30, s_bootFrame);
+
+    const char *line = (status && status[0]) ? status : "Loading...";
+    int tw = ui_fontTextWidth(line, 1);
+    ui_fontPrintShadow(cx - tw / 2, 372, UI_COL_DIM, UI_COL_SHADOW, line);
+
+    const char *brand = "xb.live cloud sync";
+    int bw = ui_fontTextWidth(brand, 1);
+    ui_fontPrintAt(cx - bw / 2, 400, UI_COL_BORDER, brand);
+
+    s_bootFrame++;
+    ui_syncFb();
+}
+
 static void ui_redrawLogArea(void)
 {
     ui_drawRect(UI_LOG_X - 4, UI_LOG_Y - 8, UI_LOG_W + 8, UI_LOG_LINES * UI_LOG_LINEH + 12, UI_COL_PANEL2);
@@ -147,7 +276,12 @@ static void ui_redrawProgressBar(void)
 
     ui_drawRect(UI_BAR_X, UI_BAR_Y, UI_BAR_W, UI_BAR_H, UI_COL_BAR_BG);
     if (fill > 0) {
-        ui_drawRect(UI_BAR_X, UI_BAR_Y, fill, UI_BAR_H, UI_COL_ORANGE);
+        /* Glossy vertical gradient: lighter amber at the top fading to a deeper
+         * orange at the bottom. */
+        for (int j = 0; j < UI_BAR_H; j++) {
+            uint32_t row = ui_mix(UI_COL_ORANGE, UI_COL_ORANGE2, j * 255 / (UI_BAR_H - 1));
+            ui_drawRect(UI_BAR_X, UI_BAR_Y + j, fill, 1, row);
+        }
     }
     ui_drawHLine(UI_BAR_X, UI_BAR_Y, UI_BAR_W, UI_COL_BORDER);
     ui_drawHLine(UI_BAR_X, UI_BAR_Y + UI_BAR_H - 1, UI_BAR_W, UI_COL_BORDER);
@@ -155,11 +289,15 @@ static void ui_redrawProgressBar(void)
 
 static void ui_drawProgressChrome(void)
 {
-    ui_fill(UI_COL_BG);
+    ui_fillBackground();
     ui_drawRect(8, 8, 624, 52, UI_COL_PANEL);
-    ui_drawHLine(8, 60, 624, UI_COL_ORANGE);
+    ui_drawHLine(8, 8, 624, UI_COL_BORDER);
+    /* Accent underline that fades out toward the right for a modern feel. */
+    for (int i = 0; i < 624; i++) {
+        ui_drawRect(8 + i, 60, 1, 2, ui_mix(UI_COL_ORANGE, UI_COL_PANEL, i * 255 / 624));
+    }
     ui_drawLogoScaled(16, 12, 44);
-    ui_fontPrintAt(72, 22, UI_COL_TEXT, "OG XBL Save Backup");
+    ui_fontPrintShadow(72, 20, UI_COL_TEXT, UI_COL_SHADOW, "OG XBL Save Backup");
     ui_fontPrintAt(72, 40, UI_COL_DIM, "xb.live cloud sync");
     ui_drawFrame(20, 68, 600, 388);
     s_logCount = 0;
@@ -285,50 +423,59 @@ static void ui_drawQrAt(const uint8_t qrcode[], int size, int ox, int oy, int ma
 
 void ui_showQrScreen(const uint8_t qrcode[], int qrModules)
 {
-    ui_fill(UI_COL_BG);
+    ui_fillBackground();
     ui_drawRect(0, 0, 640, 48, UI_COL_PANEL);
     ui_drawHLine(0, 48, 640, UI_COL_ORANGE);
 
     ui_drawLogoScaled((640 - 100) / 2, 58, 100);
     ui_drawQrAt(qrcode, qrModules, 320, 272, 150);
 
-    ui_fontPrintAt(155, 400, UI_COL_TEXT, "Scan with your phone");
-    ui_fontPrintAt(130, 420, UI_COL_DIM, "Sign in to Insignia Live");
+    const char *t1 = "Scan with your phone";
+    const char *t2 = "Sign in to Insignia Live";
+    ui_fontPrintScaledShadow(320 - ui_fontTextWidth(t1, 1) / 2, 398, UI_COL_TEXT, UI_COL_SHADOW, t1, 1);
+    ui_fontPrintAt(320 - ui_fontTextWidth(t2, 1) / 2, 420, UI_COL_DIM, t2);
     ui_syncFb();
 }
 
 void ui_showLoggedIn(const char *username)
 {
-    ui_fill(UI_COL_BG);
+    ui_fillBackground();
     ui_drawRect(0, 0, 640, 48, UI_COL_PANEL);
     ui_drawHLine(0, 48, 640, UI_COL_GREEN);
 
     ui_drawLogoScaled((640 - 130) / 2, 70, 130);
-    ui_drawFrame(120, 220, 400, 120);
+    ui_drawFrame(120, 218, 400, 124);
 
-    ui_fontPrintAt(200, 248, UI_COL_GREEN, "Signed in");
-    ui_fontPrintAt(160, 276, UI_COL_DIM, "Account:");
-    ui_fontPrintAt(160, 296, UI_COL_TEXT, username && username[0] ? username : "(unknown)");
-    ui_fontPrintAt(155, 360, UI_COL_DIM, "Starting backup and sync...");
+    const char *signed_in = "Signed in";
+    ui_fontPrintScaledShadow(320 - ui_fontTextWidth(signed_in, 2) / 2, 240, UI_COL_GREEN,
+                             UI_COL_SHADOW, signed_in, 2);
+    ui_fontPrintAt(160, 286, UI_COL_DIM, "Account:");
+    ui_fontPrintShadow(160, 304, UI_COL_TEXT, UI_COL_SHADOW,
+                       username && username[0] ? username : "(unknown)");
+    const char *starting = "Starting backup and sync...";
+    ui_fontPrintAt(320 - ui_fontTextWidth(starting, 1) / 2, 360, UI_COL_DIM, starting);
     ui_syncFb();
 }
 
 void ui_showComplete(const char *line1, const char *line2)
 {
-    ui_fill(UI_COL_BG);
+    ui_fillBackground();
     ui_drawRect(0, 0, 640, 48, UI_COL_PANEL);
     ui_drawHLine(0, 48, 640, UI_COL_GREEN);
 
-    ui_drawLogoScaled((640 - 110) / 2, 64, 110);
-    ui_drawFrame(100, 200, 440, 140);
+    ui_drawLogoScaled((640 - 110) / 2, 60, 110);
+    ui_drawFrame(100, 198, 440, 146);
 
-    ui_fontPrintAt(220, 230, UI_COL_GREEN, "Backup complete");
+    const char *done = "Backup complete";
+    ui_fontPrintScaledShadow(320 - ui_fontTextWidth(done, 2) / 2, 220, UI_COL_GREEN, UI_COL_SHADOW,
+                             done, 2);
     if (line1 && line1[0]) {
-        ui_fontPrintAt(120, 270, UI_COL_TEXT, line1);
+        ui_fontPrintAt(120, 272, UI_COL_TEXT, line1);
     }
     if (line2 && line2[0]) {
-        ui_fontPrintAt(120, 292, UI_COL_DIM, line2);
+        ui_fontPrintAt(120, 294, UI_COL_DIM, line2);
     }
-    ui_fontPrintAt(130, 380, UI_COL_DIM, "START - return to dashboard");
+    const char *hint = "START - return to dashboard";
+    ui_fontPrintAt(320 - ui_fontTextWidth(hint, 1) / 2, 380, UI_COL_DIM, hint);
     ui_syncFb();
 }

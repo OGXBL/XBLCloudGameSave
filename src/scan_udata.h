@@ -54,7 +54,18 @@ void titleDisplayName(const TitleInfo *title, char *out, size_t outsz);
  * Returns 0 if the title has no saves. */
 unsigned long long titleLatestSaveUnix(const TitleInfo *title);
 
+/* Looks up a title in a scan result and returns its latest save mtime (0 if absent). */
+unsigned long long scanTitleLatestUnix(const ScanResult *scan, const char *titleId);
+
+/* Writes the content fingerprint of a title (by id) into out. Returns FALSE if
+ * the title isn't in the scan. out needs >= 17 bytes. */
+BOOL scanTitleFingerprint(const ScanResult *scan, const char *titleId, char *out, size_t outsz);
+
 /* Builds a JSON manifest of per-save metadata for the dashboard (out buffer). */
 BOOL titleManifestJson(const TitleInfo *title, char *out, size_t outsz);
+
+/* Text sidecar embedded in each .dukex: "folder=unix_seconds" per line. Used to
+ * restore FATX last-write times after a cloud download. */
+BOOL titleSyncTimesText(const TitleInfo *title, char *out, size_t outsz);
 
 #endif

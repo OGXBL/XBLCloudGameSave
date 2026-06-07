@@ -44,6 +44,10 @@ BOOL fetchSavesManifest(const char *host, const char *port, const char *sessionK
 BOOL manifestTitleMatches(const char *manifest, const char *consoleId, const char *profile,
                           const char *titleId, const char *fingerprint);
 
+/* Parses save_modified_unix from a manifest line (0 if missing/legacy). */
+unsigned long long manifestCloudModUnix(const char *manifest, const char *consoleId,
+                                        const char *profile, const char *titleId);
+
 /* Downloads a title's .dukex archive from /api/me/xbox-saves/download/<titleId>
  * to destPath. sourceProfile is the XBMC profile the save belongs to on the server
  * ("" for default). Returns TRUE on a 2xx response (file written). */

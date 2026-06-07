@@ -10,4 +10,8 @@
  * pulled down from the website into E:\UDATA\<TitleID>\. */
 BOOL unzipToDir(const char *dukexPath, const char *destDir);
 
+/* After unzipToDir, reads _xbl_sync.txt (if present) and applies the stored
+ * last-write times to each save folder. Removes the sidecar when done. */
+void unzipApplySyncTimes(const char *destDir);
+
 #endif

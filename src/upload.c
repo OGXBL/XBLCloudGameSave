@@ -487,3 +487,38 @@ BOOL manifestTitleMatches(const char *manifest, const char *consoleId, const cha
     }
     return FALSE;
 }
+
+unsigned long long manifestCloudModUnix(const char *manifest, const char *consoleId,
+                                        const char *profile, const char *titleId)
+{
+    if (!manifest || !titleId || !titleId[0]) {
+        return 0;
+    }
+    char needle[128];
+    if (consoleId && consoleId[0]) {
+        snprintf(needle, sizeof(needle), "%s:%s:%s=", consoleId, profile ? profile : "", titleId);
+    } else {
+        snprintf(needle, sizeof(needle), "%s=", titleId);
+    }
+    const char *p = manifest;
+    size_t nlen = strlen(needle);
+    while ((p = strstr(p, needle)) != NULL) {
+        if (p != manifest && p[-1] != '\n') {
+            p++;
+            continue;
+        }
+        const char *val = p + nlen;
+        const char *mp = strchr(val, '|');
+        if (!mp) {
+            return 0;
+        }
+        mp++;
+        unsigned long long cloudMod = 0;
+        while (*mp >= '0' && *mp <= '9') {
+            cloudMod = cloudMod * 10ULL + (unsigned long long)(*mp - '0');
+            mp++;
+        }
+        return cloudMod;
+    }
+    return 0;
+}

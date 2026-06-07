@@ -15,6 +15,7 @@
 #include "eeprom_export.h"
 #include "net_auth.h"
 #include "report.h"
+#include "save_dates.h"
 #include "scan_udata.h"
 #include "session_store.h"
 #include "unzip_export.h"
@@ -29,6 +30,8 @@
 #define HDD_KEY_PATH    OUTPUT_DIR "\\hdd_key.txt"
 #define REPORT_PATH     OUTPUT_DIR "\\saves_report.txt"
 #define SESSION_PATH    OUTPUT_DIR "\\insignia_session.txt"
+#define XBL_PROBE_PATH  OUTPUT_DIR "\\xbl_probe.txt"
+#define SAVE_DATES_PATH OUTPUT_DIR "\\save_dates.txt"
 
 /* The Insignia Stats website that receives the upload. Change these to match your
  * deployment (the public host of the "insignia stats" Node server). */
@@ -39,13 +42,17 @@ extern struct netif *g_pnetif;
 
 static BOOL waitForNetwork(void)
 {
-    /* Network status shown once progress UI is active. */
+    /* Animate the boot spinner while lwIP brings the link up. We tick the
+     * spinner roughly every 80ms (about 12 frames/sec) and time out after ~90s. */
     nxNetInit(NULL);
-    for (int wait = 0; wait < 90; wait++) {
+    const int ticksPerSecond = 12;
+    const int totalTicks = 90 * ticksPerSecond;
+    for (int t = 0; t < totalTicks; t++) {
         if (g_pnetif && netif_ip4_addr(g_pnetif)->addr != 0) {
             return TRUE;
         }
-        Sleep(1000);
+        ui_showBootScreen("Connecting to network...");
+        Sleep(1000 / ticksPerSecond);
     }
     return FALSE;
 }
@@ -53,7 +60,12 @@ static BOOL waitForNetwork(void)
 int main(void)
 {
     XVideoSetMode(640, 480, 32, REFRESH_DEFAULT);
-    ui_drawHeader("OG XBL Save Backup");
+
+    /* XBMC4Gamers-style centered logo + loading spinner on first boot. */
+    for (int i = 0; i < 8; i++) {
+        ui_showBootScreen("Starting up...");
+        Sleep(60);
+    }
 
     /* 1. Mount E: and create the output folder (also holds the saved session). */
     if (!nxIsDriveMounted('E')) {
@@ -193,28 +205,21 @@ int main(void)
         }
     }
 
-    /* 5b. Optional Xbox LIVE (Insignia) account backup. On hard drives the account
-     * records live in the raw-disk config area (sectors 12-19, one 0x6C record per
-     * sector at offset 0x0C), NOT in a file. Nothing is uploaded unless the user
-     * turned this on at xb.live (off by default). */
-    if (loggedIn && consoleId[0]) {
+    /* 5b. Xbox LIVE account scan (always runs — does not require login). Upload and
+     * restore still need a valid session / console_id. */
+    {
         XblAccountSet accts;
-        if (xblReadAccounts(&accts)) {
-            ui_logf("Xbox LIVE accounts found: %d", accts.presentCount);
+        BOOL readOk = xblReadAccounts(&accts);
+        if (readOk) {
+            ui_logf("Xbox LIVE accounts found: %d (%d verified)", accts.presentCount,
+                    accts.verifiedCount);
             for (int i = 0; i < XBL_ACCOUNT_MAX; i++) {
                 if (accts.slots[i].present) {
-                    ui_logf("  slot %d: %s", i, accts.slots[i].gamertag);
-                }
-            }
-            BOOL acctEnabled = FALSE;
-            if (xblAccountSyncEnabled(UPLOAD_HOST, UPLOAD_PORT, sessionKey, &acctEnabled) &&
-                acctEnabled) {
-                if (accts.presentCount > 0) {
-                    if (uploadXblAccounts(UPLOAD_HOST, UPLOAD_PORT, sessionKey, consoleId,
-                                          accts.partition, &accts)) {
-                        ui_logf("  Uploaded %d account(s) to xb.live", accts.presentCount);
+                    if (accts.slots[i].verified) {
+                        ui_logf("  slot %d: %s", i, accts.slots[i].gamertag);
                     } else {
-                        ui_logf("  WARNING: account upload failed");
+                        ui_logf("  slot %d: %s (unverified signature)", i,
+                                accts.slots[i].gamertag);
                     }
                 }
             }
@@ -222,15 +227,55 @@ int main(void)
             ui_logf("Xbox LIVE accounts: none readable");
         }
 
-        /* Restore any accounts the user queued for THIS Xbox on the website (mimics
-         * copying an account from a memory unit). */
+        if (xblWriteProbeFile(XBL_PROBE_PATH, readOk ? &accts : NULL)) {
+            ui_logf("  Wrote xbl_probe.txt");
+        } else {
+            ui_logf("  WARNING: could not write xbl_probe.txt");
+        }
+
+        if (loggedIn) {
+            /* Read the user's account-sync setting ONCE. It gates BOTH upload and
+             * restore. If we cannot reach the server / read the setting, acctEnabled
+             * stays FALSE and we do NOT touch the account sectors (fail safe). */
+            BOOL acctEnabled = FALSE;
+            BOOL haveSetting =
+                consoleId[0] &&
+                xblAccountSyncEnabled(UPLOAD_HOST, UPLOAD_PORT, sessionKey, &acctEnabled);
+
+            if (readOk && haveSetting && acctEnabled && accts.presentCount > 0) {
+                if (uploadXblAccounts(UPLOAD_HOST, UPLOAD_PORT, sessionKey, consoleId,
+                                      accts.partition, &accts)) {
+                    ui_logf("  Uploaded %d account(s) to xb.live", accts.presentCount);
+                } else {
+                    ui_logf("  WARNING: account upload failed");
+                }
+            } else if (readOk && accts.presentCount > 0 && !consoleId[0]) {
+                ui_logf("  WARNING: accounts not uploaded (no console_id yet)");
+            }
+
+            /* Restore queued accounts. Writes go to config sectors 12-19 on HDD, or
+             * FATX superblock slots on volumes that store accounts there.
+             *
+             * CRITICAL: only ever write to the account sectors when the user has
+             * account sync explicitly ON. The server is supposed to return nothing
+             * when sync is off, but we do NOT rely on that alone — a server bug, a
+             * stale queue, or a bad response must never be able to overwrite a
+             * user's accounts. This is the guard that keeps "sync off" meaning
+             * "this tool will not write to my accounts". */
+            if (consoleId[0] && haveSetting && !acctEnabled) {
+                ui_logf("  Xbox LIVE account sync is OFF - not writing accounts");
+            }
+            if (consoleId[0] && haveSetting && acctEnabled) {
         static char restoreText[8192];
         if (fetchXblRestore(UPLOAD_HOST, UPLOAD_PORT, sessionKey, consoleId, restoreText,
                             sizeof(restoreText)) && restoreText[0]) {
             XblAccountSet cur;
             if (!xblReadAccounts(&cur)) {
                 memset(&cur, 0, sizeof(cur));
+                cur.partition = XBL_CONFIG_DISK_PART;
+                cur.useConfigSectors = TRUE;
             }
+            int restorePart = cur.partition;
             int restored = 0;
             char *line = restoreText;
             while (line && *line) {
@@ -250,21 +295,73 @@ int main(void)
                     const char *blobB64 = c3 + 1;
                     unsigned char rec[XBL_ACCOUNT_LEN];
                     int n = base64Decode(blobB64, rec, sizeof(rec));
-                    if (n == XBL_ACCOUNT_LEN) {
-                        int slot = (wantSlot >= 0 && wantSlot < XBL_ACCOUNT_MAX)
-                                       ? wantSlot
-                                       : xblPickRestoreSlot(&cur, xuid);
-                        if (slot >= 0 && xblWriteAccount(slot, rec)) {
-                            /* keep our local view in sync for subsequent picks */
+                    if (n != XBL_ACCOUNT_LEN) {
+                        ui_logf("  WARNING: bad account blob (%d bytes)", n);
+                    } else if (!xblVerifyAccount(rec)) {
+                        /* The dashboard silently ignores records that fail the XOnline
+                         * signature check, so refuse to write one (this is the usual
+                         * cause of "it installed but nothing shows"). */
+                        ui_logf("  WARNING: account failed verification - skipped");
+                    } else {
+                        /* Policy: this tool NEVER removes or replaces an account. It
+                         * only ADDS a missing account into a FREE slot:
+                         *   1. if this XUID is already on the console, do nothing; and
+                         *   2. only write into an empty slot, never over an occupied one. */
+                        int existing = -1;
+                        for (int i = 0; i < XBL_ACCOUNT_MAX; i++) {
+                            if (cur.slots[i].present &&
+                                xblXuidEqual(cur.slots[i].xuidHex, xuid)) {
+                                existing = i;
+                                break;
+                            }
+                        }
+
+                        int slot = -1;
+                        if (existing >= 0) {
+                            /* Already installed — leave it untouched, just clear it
+                             * from the restore queue so we stop offering it. */
+                            ui_logf("  account already present (slot %d) - skipped", existing);
+                            confirmXblRestored(UPLOAD_HOST, UPLOAD_PORT, sessionKey, idStr);
+                        } else if (wantSlot >= 0 && wantSlot < XBL_ACCOUNT_MAX &&
+                                   !cur.slots[wantSlot].present) {
+                            slot = wantSlot; /* requested slot, and it is free */
+                        } else {
+                            for (int i = 0; i < XBL_ACCOUNT_MAX; i++) {
+                                if (!cur.slots[i].present) {
+                                    slot = i;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (existing >= 0) {
+                            /* handled above */
+                        } else if (slot < 0) {
+                            ui_logf("  WARNING: no free account slot - nothing removed");
+                        } else if (cur.slots[slot].present) {
+                            /* Belt-and-suspenders: never write over an occupied slot. */
+                            ui_logf("  WARNING: slot %d not empty - skipped", slot);
+                        } else if (!xblWriteAccount(restorePart, slot, rec)) {
+                            ui_logf("  WARNING: account write failed (slot %d)", slot);
+                        } else {
+                            XblAccountSet check;
+                            BOOL ok = FALSE;
+                            if (xblReadAccounts(&check)) {
+                                ok = (memcmp(check.slots[slot].raw, rec, XBL_ACCOUNT_LEN) == 0) &&
+                                     xblVerifyAccount(check.slots[slot].raw);
+                            }
                             memcpy(cur.slots[slot].raw, rec, XBL_ACCOUNT_LEN);
                             cur.slots[slot].present = TRUE;
+                            cur.slots[slot].verified = ok;
                             strncpy(cur.slots[slot].xuidHex, xuid,
                                     sizeof(cur.slots[slot].xuidHex) - 1);
-                            confirmXblRestored(UPLOAD_HOST, UPLOAD_PORT, sessionKey, idStr);
-                            restored++;
-                            ui_logf("  Restored account to slot %d", slot);
-                        } else {
-                            ui_logf("  WARNING: no free account slot");
+                            if (ok) {
+                                confirmXblRestored(UPLOAD_HOST, UPLOAD_PORT, sessionKey, idStr);
+                                restored++;
+                                ui_logf("  Installed account slot %d (verified on disk)", slot);
+                            } else {
+                                ui_logf("  WARNING: slot %d write did not verify on disk", slot);
+                            }
                         }
                     }
                 }
@@ -277,6 +374,8 @@ int main(void)
                 ui_logf("  Installed %d Xbox LIVE account(s)", restored);
             }
         }
+            }
+        }
     }
 
     /* 6. Per-game archives + incremental upload. Games whose saves match the
@@ -287,6 +386,11 @@ int main(void)
     if (loggedIn) {
         fetchSavesManifest(UPLOAD_HOST, UPLOAD_PORT, sessionKey, manifest, sizeof(manifest));
     }
+
+    /* Local "true modification date" tracker. Pins each save's real date to its
+     * content fingerprint so that moving folders (which resets FATX timestamps
+     * to "now") cannot make an old save look newer than it really is. */
+    saveDatesLoad(SAVE_DATES_PATH);
 
     ui_logf("Backing up each game...");
     if (grandTotalTitles > 0) {
@@ -319,11 +423,31 @@ int main(void)
                 char fp[24];
                 titleFingerprintHex(title, fp, sizeof(fp));
 
+                /* Prefer the date pinned to this fingerprint over the raw
+                 * filesystem mtime. If the content is unchanged the tracker
+                 * returns the original date; otherwise we fall back to the
+                 * (current) filesystem time for genuinely new/edited saves. */
+                unsigned long long fsMod = titleLatestSaveUnix(title);
+                unsigned long long trackedMod = saveDatesLookup(title->titleId, profKey, fp);
+                unsigned long long localMod = trackedMod > 0 ? trackedMod : fsMod;
+
                 if (loggedIn &&
                     manifestTitleMatches(manifest, consoleId, profKey, title->titleId, fp)) {
-                    skipped++;
-                    ui_logf("  %s unchanged (skip)", gameName);
-                    continue; /* server already has this exact version */
+                    unsigned long long cloudMod =
+                        manifestCloudModUnix(manifest, consoleId, profKey, title->titleId);
+                    if (cloudMod > 0 || localMod == 0) {
+                        /* Server already has this exact content. Pin its true
+                         * date locally (the cloud's first-upload date is the
+                         * authority) so a later folder move can't fake "newer". */
+                        if (trackedMod == 0) {
+                            saveDatesRecord(title->titleId, profKey, fp,
+                                            cloudMod > 0 ? cloudMod : fsMod);
+                        }
+                        skipped++;
+                        ui_logf("  %s unchanged (skip)", gameName);
+                        continue; /* server already has this exact version */
+                    }
+                    ui_logf("  %s re-uploading (cloud missing save date)", gameName);
                 }
 
                 char zipPath[MAX_PATH];
@@ -331,7 +455,7 @@ int main(void)
                 snprintf(zipPath, sizeof(zipPath), "%s\\%s.zip", OUTPUT_DIR, title->titleId);
                 snprintf(dukexPath, sizeof(dukexPath), "%s\\%s.dukex", OUTPUT_DIR, title->titleId);
 
-                if (!zipDirectory(title->path, zipPath)) {
+                if (!zipTitleDirectory(title, zipPath)) {
                     ui_logf("  WARNING: failed to zip %s", gameName);
                     continue;
                 }
@@ -343,7 +467,7 @@ int main(void)
                 created++;
 
                 if (loggedIn) {
-                    unsigned long long saveMod = titleLatestSaveUnix(title);
+                    unsigned long long saveMod = localMod;
                     char manifestJson[4096];
                     manifestJson[0] = '\0';
                     titleManifestJson(title, manifestJson, sizeof(manifestJson));
@@ -352,6 +476,9 @@ int main(void)
                                         title->saveCount, title->totalSize, fp, saveMod,
                                         manifestJson, dukexPath)) {
                         uploaded++;
+                        /* Pin the date we just reported to this content so future
+                         * folder moves keep the same date. */
+                        saveDatesRecord(title->titleId, profKey, fp, saveMod);
                         ui_setUploadStats(uploaded, grandTotalTitles);
                         ui_logf("  Uploaded %s", gameName);
                     } else {
@@ -370,19 +497,25 @@ int main(void)
         ui_logf("View saves on xb.live (Game Saves tab)");
     }
 
-    /* 7. Pull down the game saves the website chose to sync back (sync-enabled,
-     * from another Xbox/profile), extracting them into the active E:\UDATA\<TitleID>\.
-     * The user picks which profile variation to sync on the dashboard, so we just
-     * honour the manifest here. */
+    /* 7. Pull down sync-enabled saves from other consoles/profiles when the cloud
+     * copy is NEWER than what is already on this Xbox (by save_modified time).
+     * Restored folders get their original last-write times from _xbl_sync.txt. */
     if (loggedIn && manifest[0]) {
         ui_setProgress(0.90f, "Checking downloads...");
         ui_logf("Checking for saves to download...");
-        CreateDirectory(UDATA_PATH, NULL);
-        int pulled = 0;
-        char pulledTids[64][64];
-        int pulledCount = 0;
+
+        typedef struct {
+            char srcConsole[40];
+            char srcProfile[40];
+            char titleId[64];
+            unsigned long long cloudMod;
+        } SyncPick;
+
+        SyncPick all[96];
+        int allCount = 0;
+
         const char *p = manifest;
-        while (*p) {
+        while (*p && allCount < (int)(sizeof(all) / sizeof(all[0]))) {
             char lineKey[128];
             int k = 0;
             while (*p && *p != '=' && *p != '\r' && *p != '\n' && k < (int)sizeof(lineKey) - 1) {
@@ -406,15 +539,10 @@ int main(void)
             if (*p == '\n') {
                 p++;
             }
-            if (k == 0) {
+            if (k == 0 || strstr(lineVal, "|nosync") != NULL) {
                 continue;
             }
-            if (strstr(lineVal, "|nosync") != NULL) {
-                continue; /* website disabled sync-back for this title */
-            }
 
-            /* Key format: "console_id:profile:title_id" (profile may be empty);
-             * older servers may send "console_id:title_id" or just "title_id". */
             char srcConsole[40];
             char srcProfile[40];
             char tid[64];
@@ -451,61 +579,103 @@ int main(void)
                 continue;
             }
             if (srcConsole[0] && consoleId[0] && strcmp(srcConsole, consoleId) == 0) {
-                continue; /* already uploaded from this console (any profile) */
-            }
-
-            /* Skip if the active UDATA already has this title. */
-            BOOL localHasIt = FALSE;
-            if (haveScans[0]) {
-                for (int i = 0; i < scans[0].titleCount; i++) {
-                    if (strcmp(scans[0].titles[i].titleId, tid) == 0) {
-                        localHasIt = TRUE;
-                        break;
-                    }
-                }
-            }
-            if (localHasIt) {
                 continue;
             }
 
-            /* Only restore one variation per title per run (first sync-enabled wins). */
-            BOOL already = FALSE;
-            for (int j = 0; j < pulledCount; j++) {
-                if (strcmp(pulledTids[j], tid) == 0) {
-                    already = TRUE;
+            unsigned long long cloudMod = 0;
+            {
+                const char *mp = strchr(lineVal, '|');
+                if (mp) {
+                    mp++;
+                    while (*mp >= '0' && *mp <= '9') {
+                        cloudMod = cloudMod * 10ULL + (unsigned long long)(*mp - '0');
+                        mp++;
+                    }
+                }
+            }
+
+            SyncPick *slot = &all[allCount++];
+            strncpy(slot->srcConsole, srcConsole, sizeof(slot->srcConsole) - 1);
+            strncpy(slot->srcProfile, srcProfile, sizeof(slot->srcProfile) - 1);
+            strncpy(slot->titleId, tid, sizeof(slot->titleId) - 1);
+            slot->cloudMod = cloudMod;
+        }
+
+        SyncPick picks[64];
+        int pickCount = 0;
+        for (int i = 0; i < allCount; i++) {
+            int found = -1;
+            for (int j = 0; j < pickCount; j++) {
+                if (strcmp(picks[j].titleId, all[i].titleId) == 0) {
+                    found = j;
                     break;
                 }
             }
-            if (already) {
+            if (found >= 0) {
+                if (all[i].cloudMod > picks[found].cloudMod) {
+                    picks[found] = all[i];
+                }
+            } else if (pickCount < (int)(sizeof(picks) / sizeof(picks[0]))) {
+                picks[pickCount++] = all[i];
+            }
+        }
+
+        CreateDirectory(UDATA_PATH, NULL);
+        int pulled = 0;
+        for (int i = 0; i < pickCount; i++) {
+            const SyncPick *pick = &picks[i];
+            unsigned long long localMod =
+                haveScans[0] ? scanTitleLatestUnix(&scans[0], pick->titleId) : 0;
+
+            /* If the local content matches a date we've pinned, use that pinned
+             * date instead of the (possibly move-inflated) filesystem mtime, so
+             * a moved-but-unchanged local save can't block a real cloud update. */
+            if (localMod > 0 && haveScans[0]) {
+                char localFp[24];
+                if (scanTitleFingerprint(&scans[0], pick->titleId, localFp, sizeof(localFp))) {
+                    unsigned long long pinned =
+                        saveDatesLookup(pick->titleId, vars[0].profileKey, localFp);
+                    if (pinned > 0) {
+                        localMod = pinned;
+                    }
+                }
+            }
+
+            if (pick->cloudMod > 0 && localMod > 0 && pick->cloudMod <= localMod) {
+                ui_logf("  %s skipped (local is newer or same)", pick->titleId);
+                continue;
+            }
+            if (pick->cloudMod == 0 && localMod > 0) {
+                ui_logf("  %s skipped (cloud date unknown)", pick->titleId);
                 continue;
             }
 
             char dukexPath[MAX_PATH];
             char destDir[MAX_PATH];
-            snprintf(dukexPath, sizeof(dukexPath), "%s\\%s.dukex", OUTPUT_DIR, tid);
-            snprintf(destDir, sizeof(destDir), "%s\\%s", UDATA_PATH, tid);
+            snprintf(dukexPath, sizeof(dukexPath), "%s\\%s.dukex", OUTPUT_DIR, pick->titleId);
+            snprintf(destDir, sizeof(destDir), "%s\\%s", UDATA_PATH, pick->titleId);
 
             if (!downloadGameDukex(UPLOAD_HOST, UPLOAD_PORT, sessionKey,
-                                   srcConsole[0] ? srcConsole : "legacy",
-                                   consoleId[0] ? consoleId : "", srcProfile, tid, dukexPath)) {
-                ui_logf("  WARNING: download failed for %s", tid);
+                                   pick->srcConsole[0] ? pick->srcConsole : "legacy",
+                                   consoleId[0] ? consoleId : "", pick->srcProfile, pick->titleId,
+                                   dukexPath)) {
+                ui_logf("  WARNING: download failed for %s", pick->titleId);
                 continue;
             }
             if (unzipToDir(dukexPath, destDir)) {
+                unzipApplySyncTimes(destDir);
                 pulled++;
-                if (pulledCount < 64) {
-                    strncpy(pulledTids[pulledCount], tid, sizeof(pulledTids[0]) - 1);
-                    pulledTids[pulledCount][sizeof(pulledTids[0]) - 1] = '\0';
-                    pulledCount++;
-                }
-                ui_logf("  Restored %s", tid);
+                ui_logf("  Restored %s (cloud newer)", pick->titleId);
             } else {
-                ui_logf("  WARNING: could not extract %s", tid);
+                ui_logf("  WARNING: could not extract %s", pick->titleId);
             }
         }
         ui_setProgress(1.0f, "Done");
         ui_logf("  Downloaded %d save(s) from server", pulled);
     }
+
+    /* Persist the date tracker so the pinned dates survive across runs. */
+    saveDatesFlush(SAVE_DATES_PATH);
 
     for (int v = 0; v < varCount; v++) {
         if (haveScans[v]) {

@@ -666,3 +666,5 @@ BOOL xblWriteProbeFile(const char *path, const XblAccountSet *scan)
 
     return writeFileBytes(path, text, (DWORD)pos);
 }
+
+

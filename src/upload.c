@@ -244,7 +244,11 @@ BOOL uploadGameDukex(const char *host, const char *port, const char *sessionKey,
     }
 
     char *manifestB64 = NULL;
-    char manifestHeader[7168];
+    /* Keep the big header + response buffers OFF the stack. This is the deepest
+     * frame before the TLS path needs its own room; a ~11 KB stack frame here can
+     * overflow the (modest) stack and fault the console. Uploads run one at a
+     * time, so file-scope/static buffers are safe. */
+    static char manifestHeader[7168];
     manifestHeader[0] = '\0';
     if (manifestJson && manifestJson[0]) {
         manifestB64 = base64Encode((const unsigned char *)manifestJson, strlen(manifestJson));
@@ -268,7 +272,7 @@ BOOL uploadGameDukex(const char *host, const char *port, const char *sessionKey,
     prog.total = sizeLow;
     snprintf(prog.label, sizeof(prog.label), "Uploading %s", disp);
 
-    char resp[UPLOAD_RESP_SIZE];
+    static char resp[UPLOAD_RESP_SIZE];
     int r = https_request(host, port, "POST", path, "application/octet-stream", headers, nHeaders,
                           (const char *)raw, sizeLow, resp, sizeof(resp), upload_progress_cb, &prog);
     free(manifestB64);
